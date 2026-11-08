@@ -1,0 +1,268 @@
+ZeroAI Agent Client 使用授權條款
+第 1.0 版
+
+授權方：一個團隊網路科技工作室（anTeam Network Studio，負責人：劉其彥）
+生效日期：2026 年 11 月 8 日
+Copyright (c) 2026 一個團隊網路科技工作室 (anTeam Network Studio). All rights reserved.
+
+本條款適用於授權方以「ZeroAI Agent Client」名義提供之程式（zeroai_agent.py）、文件及其他檔案
+（以下稱「本軟體」）。您下載、安裝、執行、修改或分享本軟體，即表示您已閱讀並同意本條款。
+
+本條款只規範本軟體本身。您透過本軟體使用 ZeroAI 服務（包括 ZeroAI Agent 功能、模型呼叫、額度與
+點數）時，另應遵守 ZeroAI 服務條款（https://zeroai.my/terms/）與隱私權政策
+（https://zeroai.my/privacy/）；本條款與服務條款就服務之使用有歧異時，以服務條款為準。
+
+第 1 條　定義
+1. 「您」：取得或使用本軟體之個人或組織。
+2. 「ZeroAI 服務」：授權方營運之 ZeroAI Discord Bot 及其相關網站、面板、API 與 Agent Gateway。
+3. 「裝置金鑰」：本軟體綁定時由 ZeroAI 服務核發、存於您電腦上的金鑰（zag_ 開頭）。
+4. 「修改版」：對本軟體任何部分所為之修改、增刪、翻譯，或以本軟體為基礎改作之作品。
+5. 「分享」：以任何方式將本軟體或修改版之副本提供予第三人。
+6. 「受控裝置」：本軟體所安裝、並依本軟體指示執行指令或讀寫檔案之電腦、伺服器或虛擬機。
+
+第 2 條　授權範圍
+在您遵守本條款之前提下，授權方授予您全球、非專屬、不可轉讓、不可再授權、免權利金之權利：
+1. 下載、安裝及執行本軟體，以連線至 ZeroAI 服務並使用 ZeroAI Agent 功能；
+2. 閱讀、研究本軟體之原始碼，包括為確認本軟體在您電腦上之行為而審查原始碼；
+3. 為自己使用之目的修改本軟體，例如調整設定、工具或安全規則；
+4. 依第 4 條之規定分享未經修改之本軟體。
+
+第 3 條　使用條件
+1. 本軟體僅得連線至授權方營運之 ZeroAI 服務。您不得將本軟體或修改版連線至其他服務，亦不得以本軟體
+   為基礎製作可連線至其他服務之用戶端。
+2. 您僅得將本軟體安裝於您本人所有，或您已取得所有人或管理者明確授權控制之受控裝置。於公司、學校或
+   他人所有之裝置上使用前，您應先確認符合該裝置之使用規範。
+3. 裝置金鑰等同您帳號在該台受控裝置上之使用權限。您應自行妥善保管，不得交付、出售或分享予他人；
+   懷疑外洩時，應立即以 Discord /agent unbind 或網頁面板解除綁定。
+4. 本軟體在受控裝置上之一切操作（包括執行指令、建立、修改或刪除檔案、連線網路），均視為您自行所為。
+   本軟體之危險操作核准、絕對禁止清單與工作區限制係協助您降低風險之機制，不保證能攔下所有有害操作；
+   您應於核准前自行判斷，並自行備份重要資料。
+5. 透過本軟體交付給 AI 之任務內容、工具執行結果（可能包含檔案內容與指令輸出）會傳送至 ZeroAI 服務及
+   其使用之 AI 模型供應商處理，其處理方式依 ZeroAI 隱私權政策。請勿讓本軟體讀取您不願傳送之機密資料。
+
+第 4 條　分享條件
+1. 您得免費分享未經修改之本軟體，但應完整附上本條款全文，保留所有著作權及授權聲明，並註明官方下載
+   位置為 ZeroAI Agent Gateway 之下載頁（Discord /agent bind 所顯示之網址）。
+2. 您不得就分享收取任何費用，亦不得以付費會員、贊助或其他對價作為取得條件。
+3. 未經授權方事前書面同意，您不得分享修改版。修改版僅得於您本人之受控裝置上使用。
+
+第 5 條　禁止事項
+未經授權方事前書面同意，您不得：
+1. 將本軟體、修改版或裝置金鑰用於 ZeroAI Agent 功能以外之用途，包括將 ZeroAI 服務之模型呼叫當作一般
+   AI API 使用、轉售或提供予他人，或以之建置其他產品或服務；
+2. 規避、干擾或測試 ZeroAI 服務之額度計算、點數扣除、速率限制、方案限制、身分驗證或其他安全機制，
+   包括偽造或竄改傳送至 ZeroAI 服務之用量、裝置或身分資訊；
+3. 以自動化方式大量建立帳號、綁定裝置或發送請求，或以任何方式對 ZeroAI 服務造成異常負載；
+4. 將本軟體或修改版用於未經授權存取他人之電腦、帳號或資料，散布惡意程式，發動網路攻擊，規避偵測或
+   安全防護，或其他違反法律、ZeroAI 服務條款、Discord 服務條款或所使用 AI 服務之使用政策之用途；
+5. 移除、遮蔽或修改本軟體之著作權聲明或授權聲明；
+6. 將本軟體或修改版用於商業用途，包括販售、出租、為取得報酬而替他人安裝或代管，或併入收費產品；
+7. 以「ZeroAI」或與其近似、足以使人混淆之名稱、標誌提供或推廣本軟體之修改版或其他用戶端，或暗示
+   與授權方有關聯、合作或背書。
+
+第 6 條　服務、更新與停止
+1. 本軟體須搭配 ZeroAI 服務運作，ZeroAI Agent 功能之使用資格（例如所需方案）、額度與計費方式依 ZeroAI
+   服務之規定，授權方得隨時調整。
+2. 授權方得發布本軟體之新版本，並得要求您更新至指定版本後方可繼續連線；舊版本可能因此無法使用。
+3. 授權方得依 ZeroAI 服務條款撤銷裝置金鑰、暫停或終止您使用 ZeroAI Agent 功能，或停止提供本軟體或
+   ZeroAI Agent 功能之全部或一部。
+
+第 7 條　第三方元件與設計來源
+1. 本軟體須搭配 Python 及 aiohttp 等開源套件運作，您使用該等套件時，應另行遵守其授權。
+2. 本軟體之部分設計（工具呼叫迴圈、危險操作核准、配對流程、記憶與技能）參考 Nous Research 之
+   Hermes Agent（MIT 授權），本軟體之程式碼係授權方另行撰寫，並未包含 Hermes Agent 之程式碼。
+
+第 8 條　回饋
+您向授權方提供本軟體之錯誤回報、建議或修補時，即同意授權方得自由使用、修改、分發及再授權該內容，
+且不另給付報酬；您並保證您有權提供該內容。
+
+第 9 條　權利保留
+本軟體之著作權及其他智慧財產權均歸授權方所有。本條款未明示授予之權利，均由授權方保留。
+商業用途、分享修改版或其他本條款未涵蓋之使用，請以電子郵件 info@anteam.net 聯繫授權方，另行取得授權。
+
+第 10 條　終止
+1. 您違反本條款任一規定時，依本條款取得之權利自動終止，授權方並得撤銷您的裝置金鑰。您應立即停止使用
+   及分享本軟體與修改版，並刪除所持有之副本。
+2. 您的 ZeroAI 帳號遭停權，或您已無 ZeroAI Agent 功能之使用資格時，本軟體將無法連線，但不影響第 11 條
+   至第 15 條之效力。
+3. 您得隨時以 unpair 指令解除綁定並刪除本軟體，終止本條款。
+
+第 11 條　免責聲明
+本軟體按「現狀」提供，不附帶任何明示或默示之擔保，包括適售性、特定目的適用性及不侵權之擔保。
+AI 可能誤解任務、產生錯誤指令或做出非預期之操作，您應自行判斷是否核准並承擔結果。
+
+第 12 條　責任限制
+在法律允許之最大範圍內，授權方對於因使用或無法使用本軟體所生之任何直接、間接、附帶、特別或衍生性
+損害（包括資料遺失或毀損、系統損壞、營業損失、帳號遭停權、額度或點數之消耗及第三方服務費用），
+均不負賠償責任，即使已被告知可能發生該等損害。
+
+第 13 條　條款修訂
+授權方得發布本條款之新版本。每一版本之本軟體適用其所附之條款版本；您亦得選擇對該版本適用較新版之
+條款。
+
+第 14 條　準據法與管轄
+本條款以中華民國法律為準據法。因本條款所生之爭議，以授權方主事務所所在地之地方法院為第一審管轄法院。
+
+第 15 條　語言
+本條款以中文版為準。下方英文譯本僅供參考，兩者有歧異時，以中文版為準。
+
+
+------------------------------------------------------------------------------------------------
+
+ZeroAI Agent Client License
+Version 1.0 (English reference translation; the Chinese version above prevails)
+
+Licensor: 一個團隊網路科技工作室 (anTeam Network Studio), represented by Liu Qi Yen (劉其彥)
+Effective date: November 8, 2026
+Copyright (c) 2026 一個團隊網路科技工作室 (anTeam Network Studio). All rights reserved.
+
+This License applies to the program (zeroai_agent.py), documentation and other files provided by
+the Licensor as "ZeroAI Agent Client" (the "Software"). By downloading, installing, running,
+modifying or sharing the Software, you agree to this License.
+
+This License covers the Software itself. Your use of the ZeroAI service through the Software
+(including the ZeroAI Agent feature, model calls, usage limits and points) is also governed by the
+ZeroAI Terms of Service (https://zeroai.my/terms/) and Privacy Policy (https://zeroai.my/privacy/);
+where this License and the Terms of Service differ on the use of the service, the Terms of Service
+prevail.
+
+1. Definitions
+   1. "You": any individual or organization that obtains or uses the Software.
+   2. "ZeroAI Service": the ZeroAI Discord bot operated by the Licensor and its related websites,
+      panel, APIs and Agent Gateway.
+   3. "Device Key": the key (starting with zag_) issued by the ZeroAI Service when the Software is
+      linked, and stored on your computer.
+   4. "Modified Version": any modification, addition, deletion or translation of any part of the
+      Software, or any work based on the Software.
+   5. "Share": to make a copy of the Software or a Modified Version available to any third party
+      by any means.
+   6. "Controlled Device": any computer, server or virtual machine on which the Software is
+      installed and runs commands or reads and writes files as directed by the Software.
+
+2. Grant of License
+   Subject to your compliance with this License, the Licensor grants you a worldwide,
+   non-exclusive, non-transferable, non-sublicensable, royalty-free right to:
+   1. download, install and run the Software to connect to the ZeroAI Service and use the
+      ZeroAI Agent feature;
+   2. read and study the source code of the Software, including reviewing it to check what the
+      Software does on your computer;
+   3. modify the Software for your own use, for example to adjust its settings, tools or safety
+      rules; and
+   4. Share unmodified copies of the Software in accordance with Section 4.
+
+3. Conditions of Use
+   1. The Software may connect only to the ZeroAI Service operated by the Licensor. You may not
+      connect the Software or a Modified Version to any other service, or build a client based on
+      the Software that connects to any other service.
+   2. You may install the Software only on Controlled Devices that you own, or that you have the
+      explicit authorization of the owner or administrator to control. Before using it on a device
+      owned by an employer, school or anyone else, make sure doing so complies with that device's
+      rules.
+   3. A Device Key carries your account's permissions on that Controlled Device. Keep it safe and do
+      not give, sell or share it to anyone. If you suspect it has leaked, unlink the device
+      immediately with Discord /agent unbind or the web panel.
+   4. Everything the Software does on a Controlled Device (including running commands, creating,
+      changing or deleting files, and connecting to networks) is deemed to be done by you. The
+      Software's approval prompts for risky actions, hard-blocked command list and workspace limits
+      are there to help reduce risk; they are not guaranteed to stop every harmful action. Use your
+      own judgment before approving, and back up important data yourself.
+   5. Task content you give the AI through the Software, and tool results (which may include file
+      contents and command output), are sent to the ZeroAI Service and the AI model providers it
+      uses for processing, as described in the ZeroAI Privacy Policy. Do not let the Software read
+      confidential data you are not willing to send.
+
+4. Conditions of Sharing
+   1. You may Share unmodified copies of the Software free of charge, provided that you include the
+      full text of this License, keep all copyright and license notices, and state that the
+      official download location is the ZeroAI Agent Gateway download page (the address shown by
+      Discord /agent bind).
+   2. You may not charge any fee for Sharing, or require a paid membership, donation or any other
+      consideration as a condition of access.
+   3. Without the Licensor's prior written consent, you may not Share a Modified Version. A Modified
+      Version may only be used on your own Controlled Devices.
+
+5. Restrictions
+   Without the Licensor's prior written consent, you may not:
+   1. use the Software, a Modified Version or a Device Key for any purpose other than the ZeroAI
+      Agent feature, including using the ZeroAI Service's model calls as a general-purpose AI API,
+      reselling or providing them to others, or building other products or services with them;
+   2. circumvent, interfere with or probe the ZeroAI Service's usage accounting, point deduction,
+      rate limits, plan restrictions, authentication or other security measures, including forging
+      or tampering with usage, device or identity information sent to the ZeroAI Service;
+   3. create accounts, link devices or send requests in bulk by automated means, or otherwise place
+      abnormal load on the ZeroAI Service;
+   4. use the Software or a Modified Version to gain unauthorized access to anyone else's computers,
+      accounts or data, spread malware, carry out network attacks, evade detection or security
+      protections, or for any other purpose that violates the law, the ZeroAI Terms of Service,
+      Discord's terms, or the usage policies of any AI service used;
+   5. remove, obscure or alter any copyright or license notice in the Software;
+   6. use the Software or a Modified Version for commercial purposes, including selling or renting
+      it, installing or hosting it for others in exchange for payment, or including it in a paid
+      product; or
+   7. use the name "ZeroAI", or any confusingly similar name or logo, to offer or promote a Modified
+      Version of the Software or any other client, or imply any affiliation with, partnership with
+      or endorsement by the Licensor.
+
+6. Service, Updates and Discontinuation
+   1. The Software works only with the ZeroAI Service. Eligibility for the ZeroAI Agent feature
+      (such as the required plan), usage limits and billing follow the ZeroAI Service's rules, which
+      the Licensor may change at any time.
+   2. The Licensor may release new versions of the Software and may require you to update to a
+      specified version to keep connecting; older versions may stop working as a result.
+   3. The Licensor may, in accordance with the ZeroAI Terms of Service, revoke Device Keys, suspend
+      or end your use of the ZeroAI Agent feature, or stop providing all or part of the Software or
+      the ZeroAI Agent feature.
+
+7. Third-Party Components and Design Sources
+   1. The Software runs on open-source software such as Python and aiohttp. Your use of them is
+      governed by their own licenses.
+   2. Parts of the Software's design (the tool-calling loop, approval of risky actions, the pairing
+      flow, memory and skills) draw on Nous Research's Hermes Agent (MIT License). The Software's
+      code was written separately by the Licensor and contains no Hermes Agent code.
+
+8. Feedback
+   By giving the Licensor bug reports, suggestions or patches for the Software, you agree that the
+   Licensor may freely use, modify, distribute and sublicense them without compensation, and you
+   represent that you have the right to provide them.
+
+9. Reservation of Rights
+   The copyright and other intellectual property rights in the Software belong to the Licensor.
+   All rights not expressly granted are reserved. For commercial use, Sharing a Modified Version or
+   any other use not covered by this License, contact the Licensor at info@anteam.net to obtain a
+   separate license.
+
+10. Termination
+   1. Your rights under this License terminate automatically if you breach any of its terms, and the
+      Licensor may revoke your Device Keys. You must then stop using and Sharing the Software and
+      any Modified Version and delete all copies in your possession.
+   2. If your ZeroAI account is banned, or you are no longer eligible for the ZeroAI Agent feature,
+      the Software will not be able to connect; Sections 11 to 15 remain in effect.
+   3. You may end this License at any time by unlinking with the unpair command and deleting the
+      Software.
+
+11. Disclaimer of Warranty
+   The Software is provided "as is", without warranty of any kind, express or implied, including
+   warranties of merchantability, fitness for a particular purpose and non-infringement. The AI may
+   misunderstand a task, produce wrong commands or take unexpected actions; you decide whether to
+   approve them and bear the results.
+
+12. Limitation of Liability
+   To the maximum extent permitted by law, the Licensor is not liable for any direct, indirect,
+   incidental, special or consequential damages arising from the use of or inability to use the
+   Software (including loss or corruption of data, system damage, loss of business, account
+   suspension, consumption of usage limits or points, and third-party service fees), even if
+   advised of the possibility of such damages.
+
+13. Revisions
+   The Licensor may publish new versions of this License. Each version of the Software is governed
+   by the License version that accompanies it; you may also choose to apply a later version of this
+   License to it.
+
+14. Governing Law and Jurisdiction
+   This License is governed by the laws of the Republic of China (Taiwan). The district court where
+   the Licensor's principal office is located shall be the court of first instance for any dispute
+   arising from this License.
+
+15. Language
+   The Chinese version of this License prevails. This English translation is for reference only;
+   in case of any discrepancy, the Chinese version governs.
