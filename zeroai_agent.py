@@ -39,6 +39,7 @@ import platform
 import re
 import secrets
 import socket
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -51,7 +52,7 @@ except ImportError:            # pragma: no cover
     print("需要 aiohttp：pip install aiohttp")
     raise SystemExit(1)
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 HOME = Path(os.environ.get("ZEROAI_AGENT_HOME") or (Path.home() / ".zeroai-agent"))
 CONFIG_FILE = HOME / "config.json"
 MEMORY_FILE = HOME / "memory.md"
@@ -72,6 +73,9 @@ DEFAULTS = {
 MAX_TOOL_OUTPUT = 12_000         # 單次工具輸出最多送回模型的字元數
 COMPACT_AT = 300_000             # 對話總字元超過這個數就省略較早的工具輸出（省額度）
 APPROVAL_TIMEOUT = 300
+# ZeroAI 關閉連線的代碼（與 mods_zeroai/agent_hub.py 相同）：被同一台主機的新連線取代、已解除綁定
+CLOSE_REPLACED = 4001
+CLOSE_UNBOUND = 4002
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -194,11 +198,15 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "terminal",
         "description": "在這台電腦的 shell 執行一行指令（Windows 是 cmd，其他系統是 sh），回傳輸出與結束碼。"
-                       "危險的指令（刪檔、安裝、改系統設定…）會先請使用者核准。",
+                       "危險的指令（刪檔、安裝、改系統設定…）會先請使用者核准。"
+                       "要打開視窗或程式、或啟動會一直執行的東西（開 PowerShell、開瀏覽器、開應用程式、啟動伺服器）"
+                       "時把 background 設成 true，否則會一直等到那個程式被關掉；Windows 要開新視窗用 start，例如 start powershell。",
         "parameters": {"type": "object", "properties": {
             "command": {"type": "string", "description": "要執行的指令"},
             "cwd": {"type": "string", "description": "工作目錄，預設是工作區"},
-            "timeout": {"type": "integer", "description": "秒數上限，預設 120、最多 600"}},
+            "timeout": {"type": "integer", "description": "秒數上限，預設 120、最多 600"},
+            "background": {"type": "boolean",
+                           "description": "啟動後立刻回來，不等它結束、也不回傳輸出（開視窗、開程式用）"}},
             "required": ["command"]}}},
     {"type": "function", "function": {
         "name": "read_file",
@@ -259,6 +267,50 @@ def list_skills() -> list:
     return out[:50]
 
 
+SEARCH_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv"}
+
+
+def search_text(root: Path, rx, glob: str = "", max_files: int = 5000, max_hits: int = 100,
+                time_limit: float = 30.0) -> str:
+    """在 root 底下的文字檔搜 rx。在執行緒裡跑；檔案數、結果數、時間任一到上限就整個停下
+    （以前的上限只跳出內層迴圈，os.walk 還是把整顆磁碟走完）。"""
+    deadline = time.monotonic() + time_limit
+    hits, scanned, stopped = [], 0, ""
+    for base, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SEARCH_SKIP_DIRS]
+        for name in files:
+            if glob and not fnmatch.fnmatch(name, glob):
+                continue
+            if scanned >= max_files:
+                stopped = f"已掃描 {max_files} 個檔案"
+                break
+            if time.monotonic() > deadline:
+                stopped = f"已搜尋 {time_limit:g} 秒"
+                break
+            scanned += 1
+            fp = Path(base) / name
+            try:
+                if fp.stat().st_size > 2 * 1024 * 1024:
+                    continue
+                with open(fp, encoding="utf-8", errors="ignore") as f:
+                    for no, line in enumerate(f, 1):
+                        if rx.search(line):
+                            hits.append(f"{fp}:{no}: {line.strip()[:200]}")
+                            if len(hits) >= max_hits:
+                                break
+            except OSError:
+                continue
+            if len(hits) >= max_hits:
+                stopped = f"已找到 {max_hits} 筆"
+                break
+        if stopped:
+            break
+    out = "\n".join(hits) or "沒有符合的結果。"
+    if stopped:
+        out += f"\n（{stopped}，先停在這裡；結果可能不完整，請縮小資料夾範圍或用 glob 限定檔名）"
+    return out
+
+
 class Tools:
     def __init__(self, cfg: dict, approve, redact):
         self.cfg = cfg
@@ -297,7 +349,7 @@ class Tools:
             out = out[:MAX_TOOL_OUTPUT // 2] + f"\n…（中間省略 {len(out) - MAX_TOOL_OUTPUT} 字）…\n" + out[-MAX_TOOL_OUTPUT // 2:]
         return out
 
-    async def t_terminal(self, command: str, cwd: str = "", timeout: int = 0) -> str:
+    async def t_terminal(self, command: str, cwd: str = "", timeout: int = 0, background: bool = False) -> str:
         level, why = check_command(command)
         if level == "deny":
             return f"已拒絕：這個指令在絕對禁止清單上（{why}）。"
@@ -309,6 +361,20 @@ class Tools:
             reason = await self._guard_path(workdir, "在這個資料夾執行指令")
             if reason:
                 return reason
+        if isinstance(background, str):
+            background = background.strip().lower() in ("1", "true", "yes", "on")
+        if background:
+            # 不接管輸出：開出來的視窗或程式若繼承了輸出管線，這裡會一直等到它被關掉才回來
+            extra = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+                     else {"start_new_session": True})
+            proc = await asyncio.create_subprocess_shell(
+                command, cwd=str(workdir), stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, **extra)
+            try:
+                code = await asyncio.wait_for(proc.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                return f"已在背景啟動（PID {proc.pid}），不等它結束。"
+            return f"已啟動，啟動指令在 3 秒內結束（結束碼 {code}）；開出來的視窗或程式會繼續執行。"
         limit = max(1, min(int(timeout or self.cfg.get("command_timeout") or 120), 600))
         proc = await asyncio.create_subprocess_shell(
             command, cwd=str(workdir), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
@@ -323,46 +389,57 @@ class Tools:
             text = out.decode("mbcs", errors="replace")
         return f"結束碼：{proc.returncode}\n{text}"
 
+    # 檔案類工具的實際讀寫都丟到執行緒：在事件迴圈裡同步走訪大資料夾會卡住 WebSocket 心跳，
+    # 超過十幾秒 Gateway 就判定斷線，ZeroAI 那邊看到的就是「主機中途離線」。
     async def t_read_file(self, path: str, offset: int = 1, limit: int = 400) -> str:
         p = _resolve(path, self.workspace)
         reason = await self._guard_path(p, "讀取檔案")
         if reason:
             return reason
-        if not p.is_file():
-            return f"找不到檔案：{p}"
-        if p.stat().st_size > 20 * 1024 * 1024:
-            return "檔案超過 20 MB，請用 terminal 搭配 head／findstr 之類的指令讀需要的部分。"
-        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-        start = max(1, int(offset or 1))
-        chunk = lines[start - 1:start - 1 + max(1, min(int(limit or 400), 2000))]
-        body = "\n".join(f"{i}\t{line}" for i, line in enumerate(chunk, start))
-        return f"{p}（共 {len(lines)} 行）\n{body}"
+
+        def work():
+            if not p.is_file():
+                return f"找不到檔案：{p}"
+            if p.stat().st_size > 20 * 1024 * 1024:
+                return "檔案超過 20 MB，請用 terminal 搭配 head／findstr 之類的指令讀需要的部分。"
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            start = max(1, int(offset or 1))
+            chunk = lines[start - 1:start - 1 + max(1, min(int(limit or 400), 2000))]
+            body = "\n".join(f"{i}\t{line}" for i, line in enumerate(chunk, start))
+            return f"{p}（共 {len(lines)} 行）\n{body}"
+        return await asyncio.to_thread(work)
 
     async def t_write_file(self, path: str, content: str, append: bool = False) -> str:
         p = _resolve(path, self.workspace)
         reason = await self._guard_path(p, "寫入檔案")
         if reason:
             return reason
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "a" if append else "w", encoding="utf-8", newline="") as f:
-            f.write(content)
-        return f"已{'附加' if append else '寫入'} {p}（{len(content)} 字）"
+
+        def work():
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a" if append else "w", encoding="utf-8", newline="") as f:
+                f.write(content)
+            return f"已{'附加' if append else '寫入'} {p}（{len(content)} 字）"
+        return await asyncio.to_thread(work)
 
     async def t_list_dir(self, path: str = "") -> str:
         p = _resolve(path or ".", self.workspace)
         reason = await self._guard_path(p, "列出資料夾")
         if reason:
             return reason
-        if not p.is_dir():
-            return f"不是資料夾：{p}"
-        rows = []
-        for child in sorted(p.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower()))[:500]:
-            try:
-                size = "" if child.is_dir() else f"{child.stat().st_size:,} B"
-            except OSError:
-                size = "?"
-            rows.append(f"{'📁' if child.is_dir() else '📄'} {child.name}  {size}")
-        return f"{p}\n" + ("\n".join(rows) or "（空的）")
+
+        def work():
+            if not p.is_dir():
+                return f"不是資料夾：{p}"
+            rows = []
+            for child in sorted(p.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower()))[:500]:
+                try:
+                    size = "" if child.is_dir() else f"{child.stat().st_size:,} B"
+                except OSError:
+                    size = "?"
+                rows.append(f"{'📁' if child.is_dir() else '📄'} {child.name}  {size}")
+            return f"{p}\n" + ("\n".join(rows) or "（空的）")
+        return await asyncio.to_thread(work)
 
     async def t_search_files(self, pattern: str, path: str = "", glob: str = "") -> str:
         p = _resolve(path or ".", self.workspace)
@@ -373,28 +450,7 @@ class Tools:
             rx = re.compile(pattern, re.IGNORECASE)
         except re.error as e:
             return f"regex 錯誤：{e}"
-        hits, scanned = [], 0
-        for root, dirs, files in os.walk(p):
-            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__", ".venv", "venv")]
-            for name in files:
-                if glob and not fnmatch.fnmatch(name, glob):
-                    continue
-                fp = Path(root) / name
-                scanned += 1
-                if scanned > 5000 or len(hits) >= 100:
-                    break
-                try:
-                    if fp.stat().st_size > 2 * 1024 * 1024:
-                        continue
-                    with open(fp, encoding="utf-8", errors="ignore") as f:
-                        for no, line in enumerate(f, 1):
-                            if rx.search(line):
-                                hits.append(f"{fp}:{no}: {line.strip()[:200]}")
-                                if len(hits) >= 100:
-                                    break
-                except OSError:
-                    continue
-        return "\n".join(hits) or "沒有符合的結果。"
+        return await asyncio.to_thread(search_text, p, rx, glob)
 
     async def t_fetch_url(self, url: str) -> str:
         if not re.match(r"^https?://", url or "", re.IGNORECASE):
@@ -686,13 +742,42 @@ class Server:
         self.approvals: dict = {}
         self.cancelled: set = set()
         self.redact = make_redactor(cfg)
+        # 斷線期間送不出去、又不能丟的訊息（結果、核准請求）：重新連上後補送。
+        # 任務本身不受斷線影響——模型呼叫走 HTTP，ZeroAI 也會保留任務一段時間等主機連回來。
+        self.outbox: list = []
+        self.running: set = set()
+        # 這個 serve 手上還沒回報結果的任務（執行中，或結果還在 outbox）。連上時告訴 ZeroAI，
+        # 不在清單上的任務 ZeroAI 就知道已經沒人會回報（例如換了另一個 serve），可以收掉
+        self.owned: set = set()
 
     async def send(self, data: dict):
         if self.ws is not None and not self.ws.closed:
-            await self.ws.send_json(data)
+            try:
+                await self.ws.send_json(data)
+                if data.get("type") == "result":
+                    self.owned.discard(data.get("task_id"))
+                return
+            except (ConnectionError, RuntimeError, aiohttp.ClientError):
+                pass
+        if data.get("type") in ("result", "approval_request"):
+            self.outbox.append(data)
+
+    async def _wait_running_tasks(self, limit: float = 30.0):
+        """結束前讓已經在跑的任務做完手上的步驟，不要把正在寫的檔案寫一半就砍掉。
+        結果已經送不回去（連線被取代了）；ZeroAI 在新的 serve 連上時就會把這些任務收掉。"""
+        running = [t for t in self.running if not t.done()]
+        if running:
+            print(f"  等 {len(running)} 個執行中的任務結束（最多 {limit:g} 秒）…")
+            await asyncio.wait(running, timeout=limit)
+
+    async def _flush_outbox(self):
+        pending, self.outbox = self.outbox, []
+        for data in pending:
+            await self.send(data)
 
     async def run_task(self, api: Api, task_id: str, prompt: str, model: str):
         print(f"\n📥 任務 {task_id}：{prompt[:200]}")
+        self.owned.add(task_id)
 
         async def progress(text):
             print(f"  {text}")
@@ -731,8 +816,12 @@ class Server:
                         self.ws = ws
                         backoff = 2
                         await ws.send_json({"type": "hello", "version": VERSION,
-                                            "remote_tasks": bool(self.cfg.get("remote_tasks"))})
+                                            "remote_tasks": bool(self.cfg.get("remote_tasks")),
+                                            "tasks": sorted(self.owned)})
                         print(f"🟢 已連上 ZeroAI（遠端任務：{'接受' if self.cfg.get('remote_tasks') else '不接受'}）。Ctrl+C 結束。")
+                        if self.outbox:
+                            print(f"  補送斷線期間的 {len(self.outbox)} 則訊息")
+                            await self._flush_outbox()
                         async for msg in ws:
                             if msg.type != aiohttp.WSMsgType.TEXT:
                                 continue
@@ -743,8 +832,10 @@ class Server:
                                     await self.send({"type": "result", "task_id": data.get("task_id"), "ok": False,
                                                      "text": "這台主機不接受遠端任務。"})
                                     continue
-                                asyncio.create_task(self.run_task(api, data["task_id"], data.get("prompt", ""),
-                                                                  data.get("model", "")))
+                                t = asyncio.create_task(self.run_task(api, data["task_id"], data.get("prompt", ""),
+                                                                      data.get("model", "")))
+                                self.running.add(t)
+                                t.add_done_callback(self.running.discard)
                             elif kind == "approval":
                                 fut = self.approvals.get(data.get("approval_id"))
                                 if fut is not None and not fut.done():
@@ -752,6 +843,16 @@ class Server:
                             elif kind == "cancel":
                                 self.cancelled.add(data.get("task_id"))
                                 print(f"🛑 任務 {data.get('task_id')} 已被取消")
+                        if ws.close_code == CLOSE_REPLACED:
+                            # 同一把金鑰在別的地方連上了。兩個 serve 都自動重連的話會互相擠掉、
+                            # 任務送到一半斷線，所以被取代的這一個直接結束
+                            print("⛔ 這台主機在別的地方連上了 ZeroAI（可能開了兩個 serve 視窗），這個視窗先結束。"
+                                  "只保留一個 serve 即可。")
+                            await self._wait_running_tasks()
+                            return 2
+                        if ws.close_code == CLOSE_UNBOUND:
+                            print("⛔ 這台主機已在 Discord 解除綁定，金鑰已失效。要再使用請重新 /agent bind 後 pair。")
+                            return 1
                 except aiohttp.WSServerHandshakeError as e:
                     if e.status in (401, 403):
                         print("❌ 金鑰無效或沒有使用權限（可能已在 Discord 解除綁定，或方案不是 Pro 以上）。"
@@ -760,10 +861,13 @@ class Server:
                     print(f"⚠️ 連線被拒（HTTP {e.status}），{backoff} 秒後重試…")
                 except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
                     print(f"⚠️ 連線中斷（{type(e).__name__}），{backoff} 秒後重試…")
+                except Exception as e:                    # 收到看不懂的訊息之類：重連，不要讓 serve 整個結束
+                    print(f"⚠️ 連線處理錯誤（{type(e).__name__}: {e}），{backoff} 秒後重試…")
+                else:
+                    print(f"⚠️ 與 ZeroAI 的連線中斷，{backoff} 秒後重新連線…")
                 self.ws = None
-                for fut in self.approvals.values():
-                    if not fut.done():
-                        fut.set_result(False)
+                # 等核准中的操作不在這裡判拒絕：連回來後使用者在 Discord 按的結果照樣送得到，
+                # 真的沒人按就由 APPROVAL_TIMEOUT 收尾
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 
