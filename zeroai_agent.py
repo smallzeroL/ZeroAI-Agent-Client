@@ -817,7 +817,9 @@ class Server:
                         backoff = 2
                         await ws.send_json({"type": "hello", "version": VERSION,
                                             "remote_tasks": bool(self.cfg.get("remote_tasks")),
-                                            "tasks": sorted(self.owned)})
+                                            "tasks": sorted(self.owned),
+                                            # 核准模式也告訴 ZeroAI：設成 off 時，對話裡交代任務就不再先私訊確認
+                                            "approval": str(self.cfg.get("approval") or "manual")})
                         print(f"🟢 已連上 ZeroAI（遠端任務：{'接受' if self.cfg.get('remote_tasks') else '不接受'}）。Ctrl+C 結束。")
                         if self.outbox:
                             print(f"  補送斷線期間的 {len(self.outbox)} 則訊息")

@@ -52,7 +52,7 @@ python zeroai_agent.py run "把下載資料夾裡的 PDF 依年份分資料夾"
 - **金鑰**：存在 `~/.zeroai-agent/config.json`，只能用來呼叫你自己帳號的 Agent，隨時可以在 Discord 用 `/agent unbind` 撤銷。
   工具輸出裡出現金鑰會自動遮掉。模型的 API 金鑰一直在 ZeroAI 那邊，不會到你的電腦。
 
-`config set approval off` 會關掉核准提問（絕對禁止清單照樣擋）。只建議在拋棄式的虛擬機或容器裡這樣做。
+`config set approval off` 會關掉核准提問（絕對禁止清單照樣擋），也包括在 Discord 對話裡請 AI 交給這台電腦時的私訊確認——任務會直接送出，只私訊通知你。只建議在拋棄式的虛擬機或容器裡這樣做。
 
 ## 計費
 
