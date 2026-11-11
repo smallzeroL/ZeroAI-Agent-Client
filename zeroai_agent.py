@@ -30,8 +30,10 @@ Copyright (c) 2026 一個團隊網路科技工作室 (anTeam Network Studio). Al
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import fnmatch
+import hashlib
 import ipaddress
 import inspect
 import json
@@ -42,6 +44,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -53,7 +56,7 @@ except ImportError:            # pragma: no cover
     print("需要 aiohttp：pip install aiohttp")
     raise SystemExit(1)
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 HOME = Path(os.environ.get("ZEROAI_AGENT_HOME") or (Path.home() / ".zeroai-agent"))
 CONFIG_FILE = HOME / "config.json"
 MEMORY_FILE = HOME / "memory.md"
@@ -70,7 +73,11 @@ DEFAULTS = {
     "model": "",                 # 本機任務用的模型，空白＝伺服器預設
     "max_steps": 40,
     "command_timeout": 120,
+    "auto_update": True,         # 啟動時及 serve 閒置期間從已綁定的 Gateway 更新
 }
+UPDATE_INTERVAL = 3600
+MAX_UPDATE_BYTES = 1024 * 1024
+RESTART_UPDATED = 75
 MAX_TOOL_OUTPUT = 12_000         # 單次工具輸出最多送回模型的字元數
 COMPACT_AT = 300_000             # 對話總字元超過這個數就省略較早的工具輸出（省額度）
 APPROVAL_TIMEOUT = 300
@@ -108,6 +115,149 @@ def save_config(cfg: dict) -> None:
         os.chmod(CONFIG_FILE, 0o600)           # 只有自己讀得到（Windows 上沒有作用）
     except OSError:
         pass
+
+
+# ───────────────────────── 更新 ─────────────────────────
+
+class UpdateError(Exception):
+    pass
+
+
+def _version(value: str) -> tuple:
+    if not isinstance(value, str) or not re.fullmatch(r"\d+\.\d+\.\d+", value):
+        raise UpdateError("更新版本格式錯誤。")
+    return tuple(int(n) for n in value.split("."))
+
+
+def _validate_source(body: bytes, version: str) -> None:
+    try:
+        tree = ast.parse(body)
+        versions = [node.value.value for node in tree.body
+                    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                    and any(isinstance(t, ast.Name) and t.id == "VERSION" for t in node.targets)]
+        if versions != [version]:
+            raise UpdateError("下載程式的版本與更新資訊不符。")
+        compile(tree, "zeroai_agent.py", "exec")
+    except (SyntaxError, ValueError, TypeError) as e:
+        raise UpdateError("下載的程式無法在目前的 Python 執行。") from e
+
+
+async def _update_body(response, limit: int) -> bytes:
+    if response.status != 200:
+        raise UpdateError(f"更新伺服器回報 HTTP {response.status}。")
+    body = bytearray()
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        body.extend(chunk)
+        if len(body) > limit:
+            raise UpdateError("更新檔案超過大小上限。")
+    return bytes(body)
+
+
+async def check_update(cfg: dict, download: bool = True) -> tuple | None:
+    """只信任綁定的 Gateway；下載不帶裝置金鑰、不跟隨重新導向。"""
+    base = str(cfg.get("server") or "").rstrip("/")
+    parsed = urlparse(base)
+    local = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+    if (parsed.scheme != "https" and not (parsed.scheme == "http" and local)) or not parsed.hostname \
+            or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise UpdateError("更新需要已綁定的 HTTPS Gateway 網址（本機測試可用 HTTP）。")
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30),
+                                     headers={"User-Agent": f"ZeroAI-Agent/{VERSION}",
+                                              "Cache-Control": "no-cache"}) as session:
+        async with session.get(base + "/download/manifest.json", allow_redirects=False) as response:
+            raw = await _update_body(response, 16 * 1024)
+        try:
+            manifest = json.loads(raw)
+            version = manifest["version"]
+            if _version(version) <= _version(VERSION):
+                return None
+            size, digest = manifest["size"], manifest["sha256"]
+            minimum = manifest["min_python"]
+            if type(size) is not int or not 0 < size <= MAX_UPDATE_BYTES \
+                    or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) \
+                    or not isinstance(minimum, list) or len(minimum) != 2 \
+                    or any(type(n) is not int or n < 0 for n in minimum):
+                raise UpdateError("更新資訊格式錯誤。")
+            if tuple(sys.version_info[:2]) < tuple(minimum):
+                raise UpdateError(f"新版需要 Python {minimum[0]}.{minimum[1]} 以上，請先更新 Python。")
+        except (ValueError, TypeError, KeyError) as e:
+            raise UpdateError("更新資訊格式錯誤。") from e
+        if not download:
+            return version, b""
+        async with session.get(base + "/download/zeroai_agent.py", allow_redirects=False) as response:
+            body = await _update_body(response, MAX_UPDATE_BYTES)
+    if len(body) != size or not secrets.compare_digest(hashlib.sha256(body).hexdigest(), digest):
+        raise UpdateError("更新檔案的大小或 SHA-256 不符，保留目前版本。")
+    _validate_source(body, version)
+    return version, body
+
+
+def _atomic_write(path: Path, body: bytes, mode: int) -> None:
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(body)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(name, mode)
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def install_update(version: str, body: bytes, target: Path = None) -> None:
+    """先備份，最後以同磁碟的原子替換套用；中途失敗仍保留可執行的舊檔。"""
+    _validate_source(body, version)
+    target = (target or Path(__file__)).resolve()
+    current = target.read_bytes()
+    if current == body:
+        return  # 另一個程序已套用同版時，不覆蓋它留下的舊版備份。
+    mode = target.stat().st_mode & 0o777
+    _atomic_write(target.with_name(target.name + ".bak"), current, mode)
+    _atomic_write(target, body, mode)
+
+
+async def update_client(cfg: dict, check_only: bool = False, quiet: bool = False) -> bool:
+    release = await check_update(cfg, download=not check_only)
+    if release is None:
+        if not quiet:
+            print(f"✅ 已是最新版本（{VERSION}）。")
+        return False
+    version, body = release
+    if check_only:
+        print(f"📦 可更新：{VERSION} → {version}。執行 `python zeroai_agent.py update` 套用。")
+        return False
+    install_update(version, body)
+    print(f"✅ 已更新：{VERSION} → {version}，舊版保留在 zeroai_agent.py.bak。")
+    return True
+
+
+async def auto_update(cfg: dict) -> bool:
+    if not cfg.get("auto_update", True):
+        return False
+    try:
+        return await update_client(cfg, quiet=True)
+    except (UpdateError, aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+        print(f"⚠️ 自動更新未完成：{e}；繼續使用目前版本。")
+        return False
+
+
+def restart_client() -> None:
+    try:
+        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
+    except OSError as e:
+        print(f"⚠️ 更新已套用，但無法自動重啟：{e}。請手動重新執行原指令。")
+        raise SystemExit(1) from e
+
+
+async def cmd_update(args) -> int:
+    try:
+        await update_client(load_config(), check_only=args.check)
+        return 0
+    except (UpdateError, aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+        print(f"❌ 更新失敗：{e}；目前版本未變更。")
+        return 1
 
 
 # ───────────────────────── 安全規則 ─────────────────────────
@@ -704,6 +854,8 @@ async def cmd_run(args) -> int:
     cfg = load_config()
     if _need_token(cfg):
         return 1
+    if await auto_update(cfg):
+        restart_client()
 
     async def progress(text):
         print(f"  {text}")
@@ -798,6 +950,25 @@ class Server:
         self.last_seen = 0.0            # 上次收到 ZeroAI 任何訊息的時間
         self.server_keepalive = False   # ZeroAI 是否支援訊息式的存活檢查（welcome 會說）
         self.close_note = ""            # 上一條連線結束的說明（斷線訊息用）
+        self.pending_update = None
+
+    def _idle(self) -> bool:
+        return not (self.owned or self.approvals or self.outbox or any(not t.done() for t in self.running))
+
+    async def _watch_updates(self, ws):
+        while not ws.closed:
+            await asyncio.sleep(UPDATE_INTERVAL)
+            if ws.closed or not self._idle():
+                continue
+            try:
+                if self.pending_update is None:
+                    self.pending_update = await check_update(self.cfg)
+                # 下載期間若收到任務，等它做完再更新。關閉時收到的在途任務仍由 _receive 接手。
+                if self.pending_update is not None and self._idle():
+                    await ws.close()
+                    return
+            except (UpdateError, aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+                print(f"⚠️ 自動更新檢查失敗：{e}；繼續使用目前版本。")
 
     async def send(self, data: dict):
         if self.ws is not None and not self.ws.closed:
@@ -894,11 +1065,16 @@ class Server:
                             print(f"  補送斷線期間的 {len(self.outbox)} 則訊息")
                             await self._flush_outbox()
                         keeper = asyncio.create_task(self._keepalive(ws))
+                        updater = (asyncio.create_task(self._watch_updates(ws))
+                                   if self.cfg.get("auto_update", True) else None)
                         try:
                             await self._receive(api, ws)
                         finally:
                             keeper.cancel()
                             await asyncio.gather(keeper, return_exceptions=True)
+                            if updater is not None:
+                                updater.cancel()
+                                await asyncio.gather(updater, return_exceptions=True)
                         # 斷線時把關閉代碼與維持了多久印出來：連線一直斷的時候，這兩個數字是判斷原因的依據
                         self.close_note = (f"關閉代碼 {ws.close_code}，維持了 {time.monotonic() - connected_at:.0f} 秒"
                                            + (f"，{self.close_note}" if self.close_note else ""))
@@ -912,6 +1088,13 @@ class Server:
                         if ws.close_code == CLOSE_UNBOUND:
                             print("⛔ 這台主機已在 Discord 解除綁定，金鑰已失效。要再使用請重新 /agent bind 後 pair。")
                             return 1
+                    # WebSocket 已關閉，沒有新任務會進來，才替換程式並離開事件迴圈重啟。
+                    if self.pending_update is not None and self._idle():
+                        version, body = self.pending_update
+                        self.pending_update = None
+                        install_update(version, body)
+                        print(f"✅ 已更新至 {version}，正在重新啟動…")
+                        return RESTART_UPDATED
                 except aiohttp.WSServerHandshakeError as e:
                     if e.status in (401, 403):
                         print("❌ 金鑰無效或沒有使用權限（可能已在 Discord 解除綁定，或方案不是 Pro 以上）。"
@@ -995,7 +1178,12 @@ async def cmd_serve(args) -> int:
     cfg = load_config()
     if _need_token(cfg):
         return 1
-    return await Server(cfg).loop()
+    if await auto_update(cfg):
+        restart_client()
+    result = await Server(cfg).loop()
+    if result == RESTART_UPDATED:
+        restart_client()
+    return result
 
 
 def main(argv=None) -> int:
@@ -1011,6 +1199,8 @@ def main(argv=None) -> int:
     s.add_argument("--model", default="")
     sub.add_parser("status", help="額度與可用模型")
     sub.add_parser("unpair", help="解除綁定")
+    s = sub.add_parser("update", help="從已綁定的 Gateway 更新用戶端")
+    s.add_argument("--check", action="store_true", help="只檢查版本")
     s = sub.add_parser("config", help="設定")
     s.add_argument("action", choices=["show", "set"])
     s.add_argument("key", nargs="?")
@@ -1021,7 +1211,8 @@ def main(argv=None) -> int:
             print("用法：config set <鍵> <值>")
             return 1
         return cmd_config(args)
-    handler = {"pair": cmd_pair, "serve": cmd_serve, "run": cmd_run, "status": cmd_status, "unpair": cmd_unpair}[args.cmd]
+    handler = {"pair": cmd_pair, "serve": cmd_serve, "run": cmd_run, "status": cmd_status,
+               "unpair": cmd_unpair, "update": cmd_update}[args.cmd]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:

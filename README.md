@@ -40,6 +40,33 @@ python zeroai_agent.py run "把下載資料夾裡的 PDF 依年份分資料夾"
 | `status` | 額度、計費方式、可用模型 |
 | `config show`／`config set <鍵> <值>` | 看／改設定 |
 | `unpair` | 解除綁定並刪除本機金鑰 |
+| `update [--check]` | 從已綁定的 Gateway 更新；`--check` 只看版本 |
+
+## 自動更新（1.3.0 起）
+
+預設開啟。啟動 `serve` 或 `run` 時先檢查新版；`serve` 在線期間每小時檢查一次，
+有執行中任務、待核准操作或尚未送出的結果時會延後。套用後自動重新啟動並保留原本的指令參數。
+舊版用戶端需要先手動替換成 1.3.0 一次，之後才會自動更新。
+
+```bash
+python zeroai_agent.py update --check       # 只看是否有新版
+python zeroai_agent.py update               # 立即更新，已開啟的其他 serve 視窗需自行重啟
+python zeroai_agent.py config set auto_update false  # 關閉自動更新
+python zeroai_agent.py config set auto_update true   # 重新開啟
+```
+
+設定變更後請重啟已開啟的 `serve`，讓新設定生效。
+
+更新只使用設定中的 Gateway HTTPS 網址（本機開發可用 HTTP），不跟隨重新導向，也不傳送裝置金鑰。
+下載後檢查大小、SHA-256、內嵌版本與目前 Python 的語法相容性，再備份並以原子替換套用。
+網路、驗證或寫入失敗會繼續使用原版；Gateway 尚未支援更新端點也不影響執行任務。
+程式所在資料夾需要目前使用者的寫入權限。
+
+上一版保留在程式旁的 `zeroai_agent.py.bak`；需要回復時先停止 Agent，再用它覆蓋 `zeroai_agent.py`，
+並關閉自動更新，避免下次啟動立即再次套用新版。SHA-256 用來確認下載內容與 Gateway 的版本資訊一致，
+更新來源的信任依賴已綁定 Gateway 的 HTTPS。
+
+目前更新範圍是 `zeroai_agent.py`，設定、金鑰、記憶與技能會保留；若新版新增外部套件，仍需依新版安裝說明更新相依套件。
 
 ## 安全
 
@@ -86,7 +113,7 @@ python zeroai_agent.py run "把下載資料夾裡的 PDF 依年份分資料夾"
 在整個 ZeroAI 專案根目錄執行（另需安裝 pytest 與專案測試相依套件）：
 
 ```bash
-python -m pytest tests/test_agent_client.py tests/test_agent_hub.py tests/test_agent_gateway.py tests/test_agent_keepalive.py -q -p no:cacheprovider
+python -m pytest tests/test_agent_client.py tests/test_agent_update.py tests/test_agent_hub.py tests/test_agent_gateway.py tests/test_agent_keepalive.py -q -p no:cacheprovider
 ```
 
 測試使用本機假模型與假伺服器；Gateway 核准測試會攔截指令執行，不會真的安裝套件。
