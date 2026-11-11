@@ -73,6 +73,24 @@ python zeroai_agent.py run "把下載資料夾裡的 PDF 依年份分資料夾"
 
 記憶與技能只存在你的電腦，除非被放進當次對話，否則不會上傳。
 
+## 1.2.1 修正
+
+- 工具參數不是 JSON 物件或格式錯誤時，回傳錯誤讓模型修正，不會中斷任務或誤執行無參數工具；工具錯誤也會遮蔽裝置金鑰。
+- 遞迴搜尋會排除 Agent 設定目錄與連到搜尋範圍外的檔案，並在走訪空資料夾時檢查時間上限。
+- 網頁工具會逐次檢查重新導向的內網核准，完整讀取分段回應（最多 400 KB）；DNS 查詢移到背景執行緒，避免阻塞心跳。
+- 遠端任務例外會回報失敗；取消會停止等待核准、清除待補送的核准請求，並在模型回應後再次檢查取消狀態。
+- 防止尚未回報結果的相同遠端任務重複排程，並相容沒有 `ClientWSTimeout` 的舊版 aiohttp。
+
+## 開發測試
+
+在整個 ZeroAI 專案根目錄執行（另需安裝 pytest 與專案測試相依套件）：
+
+```bash
+python -m pytest tests/test_agent_client.py tests/test_agent_hub.py tests/test_agent_gateway.py tests/test_agent_keepalive.py -q -p no:cacheprovider
+```
+
+測試使用本機假模型與假伺服器；Gateway 核准測試會攔截指令執行，不會真的安裝套件。
+
 ## 設計來源
 
 工具呼叫迴圈、危險指令核准與絕對禁止清單、配對碼、可累積的記憶與技能，參考了 Nous Research 的

@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import fnmatch
 import ipaddress
+import inspect
 import json
 import os
 import platform
@@ -44,7 +45,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 try:
     import aiohttp
@@ -52,7 +53,7 @@ except ImportError:            # pragma: no cover
     print("需要 aiohttp：pip install aiohttp")
     raise SystemExit(1)
 
-VERSION = "1.1.0"
+VERSION = "1.2.1"
 HOME = Path(os.environ.get("ZEROAI_AGENT_HOME") or (Path.home() / ".zeroai-agent"))
 CONFIG_FILE = HOME / "config.json"
 MEMORY_FILE = HOME / "memory.md"
@@ -76,6 +77,10 @@ APPROVAL_TIMEOUT = 300
 # ZeroAI 關閉連線的代碼（與 mods_zeroai/agent_hub.py 相同）：被同一台主機的新連線取代、已解除綁定
 CLOSE_REPLACED = 4001
 CLOSE_UNBOUND = 4002
+# 存活檢查（見 Server._keepalive）：用一般訊息的 ping／pong，不用 WebSocket 內建的 heartbeat
+KEEPALIVE_HEADER = "X-Agent-Keepalive"
+KEEPALIVE_INTERVAL = 20         # 每隔幾秒送一次 ping
+KEEPALIVE_TIMEOUT = 60          # 這麼久沒收到 ZeroAI 任何訊息就重新連線
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -276,8 +281,23 @@ def search_text(root: Path, rx, glob: str = "", max_files: int = 5000, max_hits:
     （以前的上限只跳出內層迴圈，os.walk 還是把整顆磁碟走完）。"""
     deadline = time.monotonic() + time_limit
     hits, scanned, stopped = [], 0, ""
+    root = root.resolve()
+
+    def permitted(path):
+        try:
+            resolved = path.resolve()
+            return _inside(resolved, root) and not _inside(resolved, HOME)
+        except (OSError, RuntimeError):
+            return False
+
     for base, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in SEARCH_SKIP_DIRS]
+        if time.monotonic() > deadline:
+            stopped = f"已搜尋 {time_limit:g} 秒"
+            break
+        if not permitted(Path(base)):
+            dirs[:] = []
+            continue
+        dirs[:] = [d for d in dirs if d not in SEARCH_SKIP_DIRS and permitted(Path(base) / d)]
         for name in files:
             if glob and not fnmatch.fnmatch(name, glob):
                 continue
@@ -290,6 +310,9 @@ def search_text(root: Path, rx, glob: str = "", max_files: int = 5000, max_hits:
             scanned += 1
             fp = Path(base) / name
             try:
+                # 核准搜尋父目錄不代表可以讀取 Agent 金鑰，或跟著檔案連結跨出核准範圍。
+                if not permitted(fp):
+                    continue
                 if fp.stat().st_size > 2 * 1024 * 1024:
                     continue
                 with open(fp, encoding="utf-8", errors="ignore") as f:
@@ -337,13 +360,15 @@ class Tools:
     async def run(self, name: str, args: dict) -> str:
         fn = getattr(self, "t_" + name, None)
         if fn is None:
-            return f"沒有這個工具：{name}"
+            return self.redact(f"沒有這個工具：{name}")
+        if not isinstance(args, dict):
+            return "參數錯誤：工具參數必須是 JSON 物件。"
         try:
-            out = await fn(**{k: v for k, v in (args or {}).items() if k in fn.__code__.co_varnames})
+            out = await fn(**{k: v for k, v in args.items() if k in inspect.signature(fn).parameters})
         except TypeError as e:
-            return f"參數錯誤：{e}"
+            out = f"參數錯誤：{e}"
         except Exception as e:
-            return f"工具執行失敗：{type(e).__name__}: {e}"
+            out = f"工具執行失敗：{type(e).__name__}: {e}"
         out = self.redact(str(out))
         if len(out) > MAX_TOOL_OUTPUT:
             out = out[:MAX_TOOL_OUTPUT // 2] + f"\n…（中間省略 {len(out) - MAX_TOOL_OUTPUT} 字）…\n" + out[-MAX_TOOL_OUTPUT // 2:]
@@ -453,21 +478,34 @@ class Tools:
         return await asyncio.to_thread(search_text, p, rx, glob)
 
     async def t_fetch_url(self, url: str) -> str:
-        if not re.match(r"^https?://", url or "", re.IGNORECASE):
-            return "只支援 http／https 網址。"
-        if _private_host(url) and self.cfg.get("approval") != "off":
-            if not await self.approve("讀取內部網路", url, "這個網址指向本機或區域網路"):
-                return "使用者沒有核准這個操作。"
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as s:
-            async with s.get(url, headers={"User-Agent": f"ZeroAI-Agent/{VERSION}"}) as r:
-                raw = await r.content.read(400_000)
-                text = raw.decode(r.charset or "utf-8", errors="replace")
-                if "html" in (r.content_type or ""):
-                    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", text)
-                    text = re.sub(r"(?s)<[^>]+>", " ", text)
-                    text = re.sub(r"[ \t]+", " ", re.sub(r"\n\s*\n+", "\n", text))
-                return f"HTTP {r.status}\n{text.strip()}"
+            for hop in range(11):
+                if not re.match(r"^https?://", url or "", re.IGNORECASE):
+                    return "只支援 http／https 網址。"
+                # DNS 解析不阻塞 WebSocket 心跳；重新導向的每個目的地也必須重新檢查。
+                if self.cfg.get("approval") != "off" and await asyncio.to_thread(_private_host, url):
+                    if not await self.approve("讀取內部網路", url, "這個網址指向本機或區域網路"):
+                        return "使用者沒有核准這個操作。"
+                async with s.get(url, headers={"User-Agent": f"ZeroAI-Agent/{VERSION}"},
+                                 allow_redirects=False) as r:
+                    if r.status in (301, 302, 303, 307, 308) and r.headers.get("Location"):
+                        if hop == 10:
+                            return "重新導向次數過多（最多 10 次）。"
+                        url = urljoin(str(r.url), r.headers["Location"])
+                        continue
+                    # read(n) 可以在第一個網路區塊抵達時就回傳；持續讀到 EOF 或大小上限。
+                    raw = bytearray()
+                    async for chunk in r.content.iter_chunked(64 * 1024):
+                        raw.extend(chunk[:400_000 - len(raw)])
+                        if len(raw) >= 400_000:
+                            break
+                    text = raw.decode(r.charset or "utf-8", errors="replace")
+                    if "html" in (r.content_type or ""):
+                        text = re.sub(r"(?is)<(script|style).*?</\1>", " ", text)
+                        text = re.sub(r"(?s)<[^>]+>", " ", text)
+                        text = re.sub(r"[ \t]+", " ", re.sub(r"\n\s*\n+", "\n", text))
+                    return f"HTTP {r.status}\n{text.strip()}"
 
     async def t_memory(self, action: str, text: str = "") -> str:
         HOME.mkdir(parents=True, exist_ok=True)
@@ -574,9 +612,11 @@ async def run_agent(api: Api, cfg: dict, task: str, model: str, approve, progres
             data = await api.llm(model, compact(messages), TOOLS, task_id)
         except ServerError as e:
             return False, f"ZeroAI 回報：{e}", total
-        except aiohttp.ClientError as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             return False, f"連不上 ZeroAI：{type(e).__name__}", total
         total = round(total + data["usage"]["points"], 2)
+        if cancelled():
+            return False, "已取消。", total
         msg = data["message"]
         messages.append(msg)
         calls = msg.get("tool_calls") or []
@@ -589,20 +629,25 @@ async def run_agent(api: Api, cfg: dict, task: str, model: str, approve, progres
             name = fn.get("name") or ""
             try:
                 args = json.loads(fn.get("arguments") or "{}")
-            except ValueError:
-                args = {}
-            shown = args.get("command") or args.get("path") or args.get("url") or args.get("pattern") or args.get("action") or ""
-            await progress(f"[{step}] {name} {str(shown)[:150]}".rstrip())
+            except (ValueError, TypeError):
+                args = None
+            shown = ((args.get("command") or args.get("path") or args.get("url") or args.get("pattern")
+                      or args.get("action") or "") if isinstance(args, dict) else "（參數格式錯誤）")
+            await progress(redact(f"[{step}] {name} {str(shown)[:150]}".rstrip()))
             if cancelled():
                 return False, "已取消。", total
-            out = await tools.run(name, args if isinstance(args, dict) else {})
+            out = await tools.run(name, args)
             messages.append({"role": "tool", "tool_call_id": tc.get("id"), "content": out})
+    if cancelled():
+        return False, "已取消。", total
     messages.append({"role": "user", "content": "已達步數上限。請不要再呼叫工具，總結目前做到哪裡、還差什麼。"})
     try:
         data = await api.llm(model, compact(messages), TOOLS, task_id)
         total = round(total + data["usage"]["points"], 2)
+        if cancelled():
+            return False, "已取消。", total
         return False, data["message"].get("content") or "已達步數上限。", total
-    except (ServerError, aiohttp.ClientError) as e:
+    except (ServerError, aiohttp.ClientError, asyncio.TimeoutError) as e:
         return False, f"已達步數上限（{e}）。", total
 
 
@@ -740,6 +785,7 @@ class Server:
         self.cfg = cfg
         self.ws = None
         self.approvals: dict = {}
+        self.approval_tasks: dict = {}   # approval_id -> task_id（取消任務時立即停止等核准）
         self.cancelled: set = set()
         self.redact = make_redactor(cfg)
         # 斷線期間送不出去、又不能丟的訊息（結果、核准請求）：重新連上後補送。
@@ -749,6 +795,9 @@ class Server:
         # 這個 serve 手上還沒回報結果的任務（執行中，或結果還在 outbox）。連上時告訴 ZeroAI，
         # 不在清單上的任務 ZeroAI 就知道已經沒人會回報（例如換了另一個 serve），可以收掉
         self.owned: set = set()
+        self.last_seen = 0.0            # 上次收到 ZeroAI 任何訊息的時間
+        self.server_keepalive = False   # ZeroAI 是否支援訊息式的存活檢查（welcome 會說）
+        self.close_note = ""            # 上一條連線結束的說明（斷線訊息用）
 
     async def send(self, data: dict):
         if self.ws is not None and not self.ws.closed:
@@ -773,6 +822,8 @@ class Server:
     async def _flush_outbox(self):
         pending, self.outbox = self.outbox, []
         for data in pending:
+            if data.get("type") == "approval_request" and data.get("approval_id") not in self.approvals:
+                continue
             await self.send(data)
 
     async def run_task(self, api: Api, task_id: str, prompt: str, model: str):
@@ -780,28 +831,39 @@ class Server:
         self.owned.add(task_id)
 
         async def progress(text):
+            text = self.redact(text)
             print(f"  {text}")
             await self.send({"type": "progress", "task_id": task_id, "text": text})
 
         async def approve(action, detail, reason):
+            if task_id in self.cancelled:
+                return False
             aid = secrets.token_hex(6)
             fut = asyncio.get_running_loop().create_future()
             self.approvals[aid] = fut
+            self.approval_tasks[aid] = task_id
             print(f"  ⚠️ 等待 Discord 核准：{action} {detail[:120]}")
-            await self.send({"type": "approval_request", "task_id": task_id, "approval_id": aid,
-                             "action": action, "detail": self.redact(detail), "reason": reason})
             try:
+                await self.send({"type": "approval_request", "task_id": task_id, "approval_id": aid,
+                                 "action": action, "detail": self.redact(detail), "reason": reason})
                 ok = await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT)
             except asyncio.TimeoutError:
                 ok = False
             finally:
                 self.approvals.pop(aid, None)
+                self.approval_tasks.pop(aid, None)
+                self.outbox[:] = [m for m in self.outbox if m.get("approval_id") != aid]
             print(f"  {'✅ 已核准' if ok else '⛔ 未核准'}")
-            return ok
+            return ok and task_id not in self.cancelled
 
-        ok, text, pts = await run_agent(api, self.cfg, prompt, model, approve, progress,
-                                        cancelled=lambda: task_id in self.cancelled, task_id=task_id,
-                                        redact=self.redact)
+        try:
+            ok, text, pts = await run_agent(api, self.cfg, prompt, model, approve, progress,
+                                            cancelled=lambda: task_id in self.cancelled, task_id=task_id,
+                                            redact=self.redact)
+        except Exception as e:
+            ok, text, pts = False, f"任務執行失敗：{type(e).__name__}: {e}", 0.0
+        finally:
+            self.cancelled.discard(task_id)
         print(("✅ " if ok else "⚠️ ") + f"任務 {task_id} 結束（{pts:g} 點）")
         await self.send({"type": "result", "task_id": task_id, "ok": ok, "text": self.redact(text)})
 
@@ -811,10 +873,17 @@ class Server:
         async with Api(self.cfg) as api:
             while True:
                 try:
-                    async with api.session.ws_connect(url + "/api/agent/ws", heartbeat=30,
-                                                      timeout=aiohttp.ClientWSTimeout(ws_close=10)) as ws:
+                    # 不用 WebSocket 內建的 heartbeat，改由 _keepalive 送一般訊息的 ping（原因見那裡）；
+                    # 用標頭告訴 Gateway 與 ZeroAI 這條連線走新的存活檢查。
+                    async with api.session.ws_connect(url + "/api/agent/ws", heartbeat=None,
+                                                      headers={KEEPALIVE_HEADER: "1"},
+                                                      timeout=(aiohttp.ClientWSTimeout(ws_close=10)
+                                                               if hasattr(aiohttp, "ClientWSTimeout") else 10.0)) as ws:
                         self.ws = ws
                         backoff = 2
+                        connected_at = self.last_seen = time.monotonic()
+                        self.server_keepalive = False
+                        self.close_note = ""
                         await ws.send_json({"type": "hello", "version": VERSION,
                                             "remote_tasks": bool(self.cfg.get("remote_tasks")),
                                             "tasks": sorted(self.owned),
@@ -824,27 +893,15 @@ class Server:
                         if self.outbox:
                             print(f"  補送斷線期間的 {len(self.outbox)} 則訊息")
                             await self._flush_outbox()
-                        async for msg in ws:
-                            if msg.type != aiohttp.WSMsgType.TEXT:
-                                continue
-                            data = json.loads(msg.data)
-                            kind = data.get("type")
-                            if kind == "task":
-                                if not self.cfg.get("remote_tasks"):
-                                    await self.send({"type": "result", "task_id": data.get("task_id"), "ok": False,
-                                                     "text": "這台主機不接受遠端任務。"})
-                                    continue
-                                t = asyncio.create_task(self.run_task(api, data["task_id"], data.get("prompt", ""),
-                                                                      data.get("model", "")))
-                                self.running.add(t)
-                                t.add_done_callback(self.running.discard)
-                            elif kind == "approval":
-                                fut = self.approvals.get(data.get("approval_id"))
-                                if fut is not None and not fut.done():
-                                    fut.set_result(bool(data.get("approved")))
-                            elif kind == "cancel":
-                                self.cancelled.add(data.get("task_id"))
-                                print(f"🛑 任務 {data.get('task_id')} 已被取消")
+                        keeper = asyncio.create_task(self._keepalive(ws))
+                        try:
+                            await self._receive(api, ws)
+                        finally:
+                            keeper.cancel()
+                            await asyncio.gather(keeper, return_exceptions=True)
+                        # 斷線時把關閉代碼與維持了多久印出來：連線一直斷的時候，這兩個數字是判斷原因的依據
+                        self.close_note = (f"關閉代碼 {ws.close_code}，維持了 {time.monotonic() - connected_at:.0f} 秒"
+                                           + (f"，{self.close_note}" if self.close_note else ""))
                         if ws.close_code == CLOSE_REPLACED:
                             # 同一把金鑰在別的地方連上了。兩個 serve 都自動重連的話會互相擠掉、
                             # 任務送到一半斷線，所以被取代的這一個直接結束
@@ -866,12 +923,72 @@ class Server:
                 except Exception as e:                    # 收到看不懂的訊息之類：重連，不要讓 serve 整個結束
                     print(f"⚠️ 連線處理錯誤（{type(e).__name__}: {e}），{backoff} 秒後重試…")
                 else:
-                    print(f"⚠️ 與 ZeroAI 的連線中斷，{backoff} 秒後重新連線…")
+                    print(f"⚠️ 與 ZeroAI 的連線中斷（{self.close_note}），{backoff} 秒後重新連線…")
                 self.ws = None
                 # 等核准中的操作不在這裡判拒絕：連回來後使用者在 Discord 按的結果照樣送得到，
                 # 真的沒人按就由 APPROVAL_TIMEOUT 收尾
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
+
+    async def _keepalive(self, ws):
+        """存活檢查：每 KEEPALIVE_INTERVAL 秒送一則一般訊息的 ping，ZeroAI 會回 pong。
+
+        不用 WebSocket 內建的 heartbeat：那是控制訊號，經過某些反向代理（CDN、主機商的代理）不會被轉送，
+        兩端各自等不到回應，約 45 秒就判定對方失聯而斷線、不斷重連。一般訊息一定會被轉送。
+        ZeroAI 在 welcome 表示支援時，超過 KEEPALIVE_TIMEOUT 秒沒收到任何訊息就主動重連。
+        """
+        while not ws.closed:
+            await asyncio.sleep(KEEPALIVE_INTERVAL)
+            if ws.closed:
+                return
+            silent = time.monotonic() - self.last_seen
+            if self.server_keepalive and silent > KEEPALIVE_TIMEOUT:
+                self.close_note = f"{silent:.0f} 秒沒有收到 ZeroAI 的任何回應，主動重連"
+                await ws.close()
+                return
+            try:
+                await ws.send_json({"type": "ping"})
+            except (ConnectionError, RuntimeError, aiohttp.ClientError):
+                return
+
+    async def _receive(self, api: Api, ws):
+        """收 ZeroAI 送來的訊息，直到連線結束。"""
+        async for msg in ws:
+            self.last_seen = time.monotonic()
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                continue
+            data = json.loads(msg.data)
+            kind = data.get("type")
+            if kind == "welcome":
+                self.server_keepalive = bool(data.get("keepalive"))
+            elif kind == "task":
+                task_id = data.get("task_id")
+                if not isinstance(task_id, str) or not task_id or task_id in self.owned:
+                    continue
+                if not self.cfg.get("remote_tasks"):
+                    await self.send({"type": "result", "task_id": data.get("task_id"), "ok": False,
+                                     "text": "這台主機不接受遠端任務。"})
+                    continue
+                # 在排程前登記，避免同一批收到兩則 task、協程還沒開始就重複執行。
+                self.owned.add(task_id)
+                t = asyncio.create_task(self.run_task(api, data["task_id"], data.get("prompt", ""),
+                                                      data.get("model", "")))
+                self.running.add(t)
+                t.add_done_callback(self.running.discard)
+            elif kind == "approval":
+                fut = self.approvals.get(data.get("approval_id"))
+                if fut is not None and not fut.done():
+                    fut.set_result(bool(data.get("approved")))
+            elif kind == "cancel":
+                task_id = data.get("task_id")
+                if task_id not in self.owned:
+                    continue
+                self.cancelled.add(task_id)
+                for aid, owner in list(self.approval_tasks.items()):
+                    fut = self.approvals.get(aid)
+                    if owner == task_id and fut is not None and not fut.done():
+                        fut.set_result(False)
+                print(f"🛑 任務 {task_id} 已被取消")
 
 
 async def cmd_serve(args) -> int:
